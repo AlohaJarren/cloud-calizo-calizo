@@ -1,0 +1,60 @@
+{% extends "base.html" %} {% block title %}Add Song - Songs MVP{% endblock %} {%
+block content %}
+<h2>Add Song</h2>
+<p>The form will be enabled in the next commit.</p>
+<form onsubmit="return false;">
+  <div class="grid">
+    <label
+      >Song title
+      <input type="text" placeholder="title" disabled />
+    </label>
+    <label
+      >Genre
+      <input type="text" placeholder="genre" disabled />
+    </label>
+    <label
+      >Performer
+      <input type="text" placeholder="performer" disabled />
+    </label>
+    <label
+      >Writer
+      <input type="text" placeholder="writer" disabled />
+    </label>
+    <label
+      >Release year (YYYY)
+      <input type="number" min="0" step="1" placeholder="year" disabled />
+    </label>
+    <label
+      >Release month (1-12)
+      <input
+        type="number"
+        min="1"
+        max="12"
+        step="1"
+        placeholder="month"
+        disabled
+      />
+    </label>
+    <label
+      >Lyrics
+      <textarea placeholder="lyrics" disabled></textarea>
+    </label>
+    <label
+      >Rating (0-10)
+      <input
+        type="number"
+        min="0"
+        max="10"
+        step="1"
+        placeholder="rating"
+        disabled
+      />
+    </label>
+    <label
+      >URL
+      <input type="url" placeholder="https://..." disabled />
+    </label>
+  </div>
+  <p><button disabled>Create</button></p>
+</form>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %} {% block title %}Songs - Songs MVP{% endblock %} {%
+block content %}
+<h2>All Songs</h2>
+
+{% if songs %}
+<table>
+  <thead>
+    <tr>
+      <th>Title</th>
+      <th>Genre</th>
+      <th>Performer</th>
+      <th>Writer</th>
+      <th>Release (YYYY-MM)</th>
+      <th>Rating</th>
+      <th>URL</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in songs %}
+    <tr>
+      <td>{{ s.title }}</td>
+      <td>{{ s.genre or "" }}</td>
+      <td>{{ s.performer or "" }}</td>
+      <td>{{ s.writer or "" }}</td>
+      <td>
+        {% if s.release_year and s.release_month %} {{
+        "%04d-%02d"|format(s.release_year, s.release_month) }} {% else %} {{ ""
+        }} {% endif %}
+      </td>
+      <td>{{ "" if s.rating is none else s.rating }}</td>
+      <td>
+        {% if s.url %}
+        <a href="{{ s.url }}" target="_blank" rel="noopener">link</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No songs yet.</p>
+{% endif %} {% endblock %}

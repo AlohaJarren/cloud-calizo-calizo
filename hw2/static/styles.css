@@ -1,0 +1,79 @@
+/* Simple, readable defaults. Trebuchet MS first for a bit of character. */
+:root {
+  --maxw: 960px;
+  --pad: 1rem;
+  --border: #ddd;
+  --bg: #ffffff;
+  --ink: #111111;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Trebuchet MS, system-ui, -apple-system, Segoe UI, Roboto, Arial,
+    sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  margin: 0;
+}
+
+header,
+main,
+footer {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: var(--pad);
+}
+
+nav a {
+  margin-right: 1rem;
+}
+
+.card {
+  padding: var(--pad);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+label {
+  display: block;
+  margin: 0.5rem 0 0.25rem;
+}
+
+input[type="text"],
+input[type="url"],
+input[type="number"],
+textarea {
+  width: 100%;
+  padding: 0.5rem;
+}
+
+textarea {
+  min-height: 6rem;
+}
+
+button {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem 1rem;
+}
