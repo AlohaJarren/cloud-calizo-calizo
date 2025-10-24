@@ -1,0 +1,19 @@
+# Python cache and virtual env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+ENV/
+.env
+
+# SQLite database
+*.db
+
+# OS junk
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
