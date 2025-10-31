@@ -1,0 +1,57 @@
+# Small image target on Alpine
+# Build wheels in a throwaway stage, install as root, then run as non-root.
+
+# Stage 1: builder - compile any native deps into wheels
+FROM alpine:3.20 AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Toolchain for building wheels on musl (Alpine)
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    gcc \
+    musl-dev \
+    python3-dev
+
+WORKDIR /w
+COPY hw2/requirements.txt /w/requirements.txt
+
+# Build wheels for all requirements
+RUN pip3 wheel --no-cache-dir -r /w/requirements.txt -w /wheels
+
+# Stage 2: runtime - smallest practical Python + our deps
+FROM alpine:3.20
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Runtime bits only: python3 and wget for HEALTHCHECK
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    wget
+
+WORKDIR /app
+
+# Install Python deps from locally built wheels as root into system site-packages
+COPY hw2/requirements.txt /tmp/requirements.txt
+COPY --from=builder /wheels /wheels
+RUN pip3 install --break-system-packages --no-cache-dir --no-index --find-links=/wheels -r /tmp/requirements.txt \
+    && rm -rf /wheels /tmp/requirements.txt /root/.cache \
+    && rm -rf /usr/lib/python3*/site-packages/pip* /usr/bin/pip*
+
+# Create non-root user and copy app, then drop privileges
+RUN adduser -D -h /home/appuser appuser
+COPY hw2/ /app/hw2/
+COPY hw3/start.py /app/hw3/start.py
+RUN chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+    CMD wget -qO- http://127.0.0.1:5000/ > /dev/null || exit 1
+
+CMD ["python3", "/app/hw3/start.py"]
