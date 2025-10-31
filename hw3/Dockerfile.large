@@ -1,0 +1,44 @@
+# Large image baseline
+# Ubuntu 22.04 with system Python and pip; minimal packages; non-root runtime.
+
+FROM ubuntu:22.04
+
+# Keep builds quiet and bytecode-free
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# System deps: python3, pip, and certificates
+RUN apt-get update -y \
+ && apt-get install -y --no-install-recommends \
+      python3 \
+      python3-pip \
+      ca-certificates \
+      wget \
+ && rm -rf /var/lib/apt/lists/*
+
+# App home
+WORKDIR /app
+
+# Leverage layer caching by installing deps first
+COPY hw2/requirements.txt /app/hw2/requirements.txt
+RUN pip3 install --no-cache-dir -r /app/hw2/requirements.txt
+
+# Bring in the application and the launcher
+COPY hw2/ /app/hw2/
+COPY hw3/start.py /app/hw3/start.py
+
+# Security: run as non-root
+RUN useradd -m -r appuser \
+ && chown -R appuser:appuser /app
+USER appuser
+
+# Container network port
+EXPOSE 5000
+
+# Simple healthcheck without extra frameworks
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+  CMD wget -qO- http://127.0.0.1:5000/ > /dev/null || exit 1
+
+# Start the server
+CMD ["python3", "/app/hw3/start.py"]
