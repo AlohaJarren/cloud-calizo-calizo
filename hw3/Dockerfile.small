@@ -1,63 +1,43 @@
-# Small image target on Alpine
-# Build wheels in a throwaway stage, install as root, then run as non-root.
+# Small runtime using Distroless Python 3
+# Build Python deps on Debian (glibc), copy only site-packages, run on distroless.
 
-# Stage 1: builder - compile any native deps into wheels
-FROM alpine:3.20 AS builder
+# Stage 1: builder - install deps into a standalone site-packages dir
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# Toolchain for building wheels on musl (Alpine)
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    gcc \
-    musl-dev \
-    python3-dev
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /w
 COPY hw2/requirements.txt /w/requirements.txt
 
-# Build wheels for all requirements
-RUN pip3 wheel --no-cache-dir -r /w/requirements.txt -w /wheels
+# Install all deps into /opt/site-packages (no venv needed)
+RUN pip install --no-cache-dir -t /opt/site-packages -r /w/requirements.txt \
+    # prune caches and tests (keep *.dist-info for importlib.metadata)
+    && find /opt/site-packages -type d -name "__pycache__" -prune -exec rm -rf {} + \
+    && find /opt/site-packages -type d -name "tests" -prune -exec rm -rf {} +
 
-# Stage 2: runtime - smallest practical Python + our deps
-FROM alpine:3.20
+# Stage 2: runtime - distroless python3 (no shell, no package manager)
+FROM gcr.io/distroless/python3-debian12:nonroot
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# Runtime bits only
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    wget
+# Make our copied packages importable
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/opt/site-packages
 
 WORKDIR /app
 
-# Install from locally built wheels as root into system site-packages,
-# then prune leftovers to keep the image lean (do NOT remove *.dist-info).
-COPY hw2/requirements.txt /tmp/requirements.txt
-COPY --from=builder /wheels /wheels
-RUN pip3 install --break-system-packages --no-cache-dir --no-index --find-links=/wheels -r /tmp/requirements.txt \
-    && rm -rf /wheels /tmp/requirements.txt /root/.cache \
-    # remove pip and its entrypoints
-    && apk del --no-network py3-pip \
-    && rm -rf /usr/lib/python3*/site-packages/pip* /usr/bin/pip* \
-    # trim caches and tests (keep *.dist-info for importlib.metadata)
-    && find /usr/lib/python3*/site-packages -type d -name "__pycache__" -prune -exec rm -rf {} + \
-    && find /usr/lib/python3*/site-packages -type d -name "tests" -prune -exec rm -rf {} +
-
-# Create non-root user, copy app, drop privileges
-RUN adduser -D -h /home/appuser appuser
+# Copy only what we need to run
+COPY --from=builder /opt/site-packages /opt/site-packages
 COPY hw2/ /app/hw2/
 COPY hw3/start.py /app/hw3/start.py
-RUN chown -R appuser:appuser /app
-USER appuser
 
 EXPOSE 5000
 
+# Use exec-form and absolute python for healthcheck (distroless has no shell)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-    CMD wget -qO- http://127.0.0.1:5000/ > /dev/null || exit 1
+    CMD ["/usr/bin/python3", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:5000/').read()"]
 
-CMD ["python3", "/app/hw3/start.py"]
+# Distroless entrypoint is already /usr/bin/python3
+# So CMD must be only the script path.
+CMD ["/app/hw3/start.py"]
