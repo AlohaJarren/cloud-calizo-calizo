@@ -27,7 +27,7 @@ FROM alpine:3.20
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Runtime bits only: python3 and wget for HEALTHCHECK
+# Runtime bits only
 RUN apk add --no-cache \
     python3 \
     py3-pip \
@@ -35,14 +35,20 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Install Python deps from locally built wheels as root into system site-packages
+# Install from locally built wheels as root into system site-packages,
+# then prune leftovers to keep the image lean (do NOT remove *.dist-info).
 COPY hw2/requirements.txt /tmp/requirements.txt
 COPY --from=builder /wheels /wheels
 RUN pip3 install --break-system-packages --no-cache-dir --no-index --find-links=/wheels -r /tmp/requirements.txt \
     && rm -rf /wheels /tmp/requirements.txt /root/.cache \
-    && rm -rf /usr/lib/python3*/site-packages/pip* /usr/bin/pip*
+    # remove pip and its entrypoints
+    && apk del --no-network py3-pip \
+    && rm -rf /usr/lib/python3*/site-packages/pip* /usr/bin/pip* \
+    # trim caches and tests (keep *.dist-info for importlib.metadata)
+    && find /usr/lib/python3*/site-packages -type d -name "__pycache__" -prune -exec rm -rf {} + \
+    && find /usr/lib/python3*/site-packages -type d -name "tests" -prune -exec rm -rf {} +
 
-# Create non-root user and copy app, then drop privileges
+# Create non-root user, copy app, drop privileges
 RUN adduser -D -h /home/appuser appuser
 COPY hw2/ /app/hw2/
 COPY hw3/start.py /app/hw3/start.py
