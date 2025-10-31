@@ -9,19 +9,19 @@ The app is launched by hw3/start.py so we do not edit hw2 code. It binds 0.0.0.0
 
 ## Build (from repo root so hw2/ is in context)
 
-docker build -f hw3/Dockerfile.large -t <dockerhub_id>/hw3large .
-docker build -f hw3/Dockerfile.small -t <dockerhub_id>/hw3small .
+docker build -f hw3/Dockerfile.large -t jarrenx/hw3large .
+docker build -f hw3/Dockerfile.small -t jarrenx/hw3small .
 
 ## Quick local run
 
-docker run --name hw3large -p 8000:5000 --rm <dockerhub_id>/hw3large
+docker run --name hw3large -p 8000:5000 --rm jarrenx/hw3large
 
 # new terminal
 
 wget -qO landing_large.html http://localhost:8000/
 cat landing_large.html
 
-docker run --name hw3small -p 8000:5000 --rm <dockerhub_id>/hw3small
+docker run --name hw3small -p 8000:5000 --rm jarrenx/hw3small
 
 # new terminal
 
@@ -31,8 +31,8 @@ cat landing_small.html
 ## Push to Docker Hub
 
 docker login
-docker push <dockerhub_id>/hw3large
-docker push <dockerhub_id>/hw3small
+docker push jarrenx/hw3large
+docker push jarrenx/hw3small
 
 ## Prune on the Ubuntu VM, then pull-run from Hub (for screenshots)
 
@@ -48,14 +48,14 @@ docker rmi -f $(docker images -q) || true
 
 # run from Hub and show layer pulls
 
-docker run --name hw3large -p 8000:5000 --rm <dockerhub_id>/hw3large
+docker run --name hw3large -p 8000:5000 --rm jarrenx/hw3large
 
 # in a second terminal
 
 wget -qO vm_large.html http://localhost:8000/
 cat vm_large.html
 
-docker run --name hw3small -p 8000:5000 --rm <dockerhub_id>/hw3small
+docker run --name hw3small -p 8000:5000 --rm jarrenx/hw3small
 
 # in a second terminal
 
@@ -64,8 +64,8 @@ cat vm_small.html
 
 ## Screenshot checklist (place in a Google Doc, then export to hw3/screenshots.pdf)
 
-1. Docker Hub -> Repositories -> <dockerhub_id>/hw3large -> Tags page showing compressed size
-2. Docker Hub -> Repositories -> <dockerhub_id>/hw3small -> Tags page showing compressed size
+1. Docker Hub -> Repositories -> jarrenx/hw3large -> Tags page showing compressed size
+2. Docker Hub -> Repositories -> jarrenx/hw3small -> Tags page showing compressed size
 3. Terminal after pruning images (docker rmi output visible)
 4. Terminal showing docker run pulling layers for hw3large from Hub
 5. Terminal showing wget http://localhost:8000 and cat of vm_large.html contents
@@ -82,8 +82,8 @@ cat vm_small.html
 ## Alternate build path (if you prefer being inside hw3/)
 
 cd hw3
-docker build -f Dockerfile.large -t <dockerhub_id>/hw3large ..
-docker build -f Dockerfile.small -t <dockerhub_id>/hw3small ..
+docker build -f Dockerfile.large -t jarrenx/hw3large ..
+docker build -f Dockerfile.small -t jarrenx/hw3small ..
 
 ## Troubleshooting tips
 
