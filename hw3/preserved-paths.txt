@@ -1,0 +1,18 @@
+# Preserve Python package metadata that Flask read via importlib.metadata.
+# Included both distroless and alpine paths; non-matching globs are harmless.
+
+# Distroless site-packages
+/opt/site-packages/Flask-*.dist-info
+/opt/site-packages/Werkzeug-*.dist-info
+/opt/site-packages/Jinja2-*.dist-info
+/opt/site-packages/itsdangerous-*.dist-info
+/opt/site-packages/click-*.dist-info
+/opt/site-packages/markupsafe-*.dist-info
+
+# Alpine site-packages
+/usr/lib/python3.*/site-packages/Flask-*.dist-info
+/usr/lib/python3.*/site-packages/Werkzeug-*.dist-info
+/usr/lib/python3.*/site-packages/Jinja2-*.dist-info
+/usr/lib/python3.*/site-packages/itsdangerous-*.dist-info
+/usr/lib/python3.*/site-packages/click-*.dist-info
+/usr/lib/python3.*/site-packages/markupsafe-*.dist-info

@@ -31,3 +31,9 @@ build/
 .mypy_cache/
 .pytest_cache/
 .cache/
+
+# SlimToolkit outputs
+slim.report.json
+slim-state/
+slim.output/
+slim.log
