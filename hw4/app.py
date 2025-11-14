@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 """
-CS 530 - HW4 (Commit 3)
+Commit 5
 
-Switch persistence to Cloud Datastore. Reuses HW2 templates/static.
-Kind is set to a course-specific value to avoid Guestbook collisions.
+Flask app using Cloud Datastore for storage.
+Reuses HW2 templates and static files for the UI.
+Adds /readyz and lightweight request logging.
 """
 
 import os
 import sys
+import time
+import uuid
+import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, Final
-from flask import Flask, render_template, request, redirect, url_for, flash
+from typing import Optional, Final
+from flask import Flask, render_template, request, redirect, url_for, flash, g
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HW2_PATH = REPO_ROOT / "hw2"
@@ -19,6 +23,10 @@ if HW2_PATH.exists():
     sys.path.insert(0, str(HW2_PATH))
 
 from model_datastore import DatastoreModel, Song  # local module
+
+# Simple stdout logging for Cloud Run
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("hw4")
 
 
 def create_app() -> Flask:
@@ -38,9 +46,36 @@ def create_app() -> Flask:
     model = DatastoreModel(project_id=project_id, namespace=namespace, kind=kind)
     model.init_storage()
 
+    @app.before_request
+    def _start_timer():
+        g._t0 = time.perf_counter()
+        g.req_id = str(uuid.uuid4())
+
+    @app.after_request
+    def _log_response(resp):
+        try:
+            dt_ms = round((time.perf_counter() - g._t0) * 1000, 2)
+        except Exception:
+            dt_ms = None
+        log.info(
+            {
+                "req_id": getattr(g, "req_id", None),
+                "method": request.method,
+                "path": request.path,
+                "status": resp.status_code,
+                "latency_ms": dt_ms,
+            }
+        )
+        return resp
+
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
+
+    @app.get("/readyz")
+    def readyz():
+        # Datastore is schemaless; this is a light-readiness check.
+        return {"ready": True}
 
     @app.get("/")
     def index():
@@ -62,11 +97,11 @@ def create_app() -> Flask:
         """
         form = request.form
 
-        def val(name: str) -> Optional[str]:
+        def val(name: str):
             v = (form.get(name) or "").strip()
             return v or None
 
-        def to_int(name: str) -> Optional[int]:
+        def to_int(name: str):
             v = val(name)
             if v is None:
                 return None
@@ -75,7 +110,7 @@ def create_app() -> Flask:
             except ValueError:
                 return None
 
-        def clamp_month(name: str) -> Optional[int]:
+        def clamp_month(name: str):
             m = to_int(name)
             if m is None:
                 return None
@@ -120,7 +155,7 @@ def create_app() -> Flask:
             rating=rating,
             url=url,
         )
-
+        
         model.insert_song(song)
         flash("Song added.", "success")
         return redirect(url_for("songs_list"))
