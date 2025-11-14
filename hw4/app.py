@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 """
-CS 530 - HW4 (Commit 1 of 6)
+CS 530 - HW4 (Commit 3)
 
-Flask shell that reuses the HW2 UI. Uses a simple in-memory list so it
-runs cleanly by itself. A Datastore-backed model drops in next.
+Switch persistence to Cloud Datastore. Reuses HW2 templates/static.
+Kind is set to a course-specific value to avoid Guestbook collisions.
 """
 
 import os
@@ -13,20 +13,17 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Final
 from flask import Flask, render_template, request, redirect, url_for, flash
 
-# Point Flask at HW2 assets so the UI matches my earlier homework.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HW2_PATH = REPO_ROOT / "hw2"
 if HW2_PATH.exists():
     sys.path.insert(0, str(HW2_PATH))
 
+from model_datastore import DatastoreModel, Song  # local module
+
 
 def create_app() -> Flask:
     """
-    Application factory for HW4.
-
-    This first commit keeps persistence in-memory. The route surfaces
-    stay the same so we can swap to Datastore in the next commit
-    without churn in templates or handlers.
+    Application factory for HW4 using Datastore.
     """
     template_folder = str(HW2_PATH / "templates") if HW2_PATH.exists() else "templates"
     static_folder = str(HW2_PATH / "static") if HW2_PATH.exists() else "static"
@@ -34,8 +31,12 @@ def create_app() -> Flask:
     app = Flask(__name__, template_folder=template_folder, static_folder=static_folder)
     app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev")
 
-    # Temporary store. Jinja can access dict fields directly.
-    store: list[Dict[str, Any]] = []
+    project_id = os.environ.get("PROJECT_ID")
+    namespace = os.environ.get("DATASTORE_NAMESPACE", "cs530-hw4")
+    kind = os.environ.get("DATASTORE_KIND", "CS530_SongsHW4")
+
+    model = DatastoreModel(project_id=project_id, namespace=namespace, kind=kind)
+    model.init_storage()
 
     @app.get("/healthz")
     def healthz():
@@ -47,18 +48,17 @@ def create_app() -> Flask:
 
     @app.get("/songs")
     def songs_list():
-        return render_template("songs_list.html", songs=store)
+        songs = model.list_songs()
+        return render_template("songs_list.html", songs=songs)
 
     @app.get("/songs/new")
     def songs_new():
-        # Used to repopulate fields after a validation error.
         return render_template("songs_new.html", prev={})
 
     @app.post("/songs")
     def songs_create():
         """
         Create a song with light server-side checks.
-        Mirrors HW2 rules so the UX feels the same.
         """
         form = request.form
 
@@ -109,20 +109,19 @@ def create_app() -> Flask:
             flash("URL must start with http:// or https://", "error")
             return render_template("songs_new.html", prev=form)
 
-        store.append(
-            {
-                "title": title,
-                "genre": val("genre"),
-                "performer": val("performer"),
-                "writer": val("writer"),
-                "release_year": release_year,
-                "release_month": release_month,
-                "lyrics": val("lyrics"),
-                "rating": rating,
-                "url": url,
-            }
+        song = Song(
+            title=title,
+            genre=val("genre"),
+            performer=val("performer"),
+            writer=val("writer"),
+            release_year=release_year,
+            release_month=release_month,
+            lyrics=val("lyrics"),
+            rating=rating,
+            url=url,
         )
 
+        model.insert_song(song)
         flash("Song added.", "success")
         return redirect(url_for("songs_list"))
 
@@ -130,7 +129,6 @@ def create_app() -> Flask:
 
 
 if __name__ == "__main__":
-    # Bind to 0.0.0.0 so it works in containers later.
     PORT: Final[int] = int(os.environ.get("PORT", "5000"))
     APP: Final[Flask] = create_app()
     APP.run(host="0.0.0.0", port=PORT, debug=True)
