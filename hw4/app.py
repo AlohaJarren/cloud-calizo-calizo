@@ -23,7 +23,12 @@ HW2_PATH = REPO_ROOT / "hw2"
 if HW2_PATH.exists():
     sys.path.insert(0, str(HW2_PATH))
 
-from model_datastore import DatastoreModel, Song  # local module
+try:
+    # When running from repo root with "python hw4/app.py"
+    from model_datastore import DatastoreModel, Song  # local module
+except ModuleNotFoundError:
+    # When running as a package (e.g., gunicorn hw4.app:...)
+    from hw4.model_datastore import DatastoreModel, Song
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("hw4")

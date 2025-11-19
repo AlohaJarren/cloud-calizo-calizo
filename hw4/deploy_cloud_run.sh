@@ -30,7 +30,7 @@ gcloud artifacts repositories create "$REPO" \
 IMAGE_PATH="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/hw4:${IMAGE_TAG}"
 
 echo "[build] ${IMAGE_PATH}"
-gcloud builds submit --tag "$IMAGE_PATH" --project "$PROJECT_ID"
+gcloud builds submit . --tag "$IMAGE_PATH" --project "$PROJECT_ID"
 
 echo "[deploy] Cloud Run service 'hw4'"
 gcloud run deploy hw4 \

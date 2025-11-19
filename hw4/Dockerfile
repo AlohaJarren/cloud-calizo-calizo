@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Copy application code and Bring in HW2 templates and static so the UI renders
-COPY hw4/ /app/hw4/
+COPY . /app/hw4/
 COPY hw2/templates/ /app/hw2/templates/
 COPY hw2/static/ /app/hw2/static/
 
@@ -27,4 +27,4 @@ USER appuser
 EXPOSE 8080
 
 # Gunicorn calls the factory function in app.py
-CMD ["gunicorn", "-b", "0.0.0.0:${PORT}", "hw4.app:create_app()"]
+CMD gunicorn -b "0.0.0.0:${PORT:-8080}" "hw4.app:create_app()"
