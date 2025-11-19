@@ -29,10 +29,10 @@ gcloud artifacts repositories create "$REPO" \
 
 IMAGE_PATH="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/hw4:${IMAGE_TAG}"
 
-echo "[build] submitting build to Cloud Build -> ${IMAGE_PATH}"
+echo "[build] ${IMAGE_PATH}"
 gcloud builds submit --tag "$IMAGE_PATH" --project "$PROJECT_ID"
 
-echo "[deploy] deploying Cloud Run service 'hw4'"
+echo "[deploy] Cloud Run service 'hw4'"
 gcloud run deploy hw4 \
   --image "$IMAGE_PATH" \
   --region "$REGION" \
@@ -40,11 +40,9 @@ gcloud run deploy hw4 \
   --project "$PROJECT_ID"
 
 SERVICE_URL="$(gcloud run services describe hw4 --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')"
-echo "[deploy] service url: ${SERVICE_URL}"
+echo "[deploy] url: ${SERVICE_URL}"
 
 # Write URL to hw4/url.txt next to this script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "${SERVICE_URL}" > "${SCRIPT_DIR}/url.txt"
 echo "[deploy] wrote ${SCRIPT_DIR}/url.txt"
-
-echo "[done] open ${SERVICE_URL}"

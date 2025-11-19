@@ -5,28 +5,26 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PORT=8080 \
+    GUNICORN_CMD_ARGS="--workers=2 --threads=4 --timeout=60"
 
 # Work under /app/hw4 so gunicorn can load "app:create_app()"
-WORKDIR /app/hw4
+WORKDIR /app
 
-# Install deps first for better layer caching
-COPY hw4/requirements.txt /app/hw4/requirements.txt
-RUN python -m pip install --upgrade pip && pip install -r /app/hw4/requirements.txt
+# Copy application code and Bring in HW2 templates and static so the UI renders
+COPY hw4/ /app/hw4/
+COPY hw2/templates/ /app/hw2/templates/
+COPY hw2/static/ /app/hw2/static/
 
-# Copy application code
-COPY hw4 /app/hw4
+# Install runtime deps
+RUN pip install --no-cache-dir -r /app/hw4/requirements.txt
 
-# Bring in HW2 templates and static so the UI renders
-COPY hw2/templates /app/hw2/templates
-COPY hw2/static /app/hw2/static
-
-# Drop privileges
-RUN useradd -m appuser && chown -R appuser:appuser /app
+# Non-root user (Cloud Run friendly)
+RUN useradd -m appuser
 USER appuser
 
 # Cloud Run sets PORT
-ENV PORT=8080
+EXPOSE 8080
 
 # Gunicorn calls the factory function in app.py
-CMD gunicorn -w 2 -k gthread -b 0.0.0.0:${PORT} "app:create_app()"
+CMD ["gunicorn", "-b", "0.0.0.0:${PORT}", "hw4.app:create_app()"]

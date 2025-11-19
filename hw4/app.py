@@ -1,13 +1,8 @@
 from __future__ import annotations
-
 """
-Commit 6
-
-Flask app using Cloud Datastore for storage.
-Reuses HW2 templates and static files for the UI.
-Adds /readyz and lightweight request logging.
-
-Adds stricter validation and field length caps.
+CS 530 - HW4
+Flask app that reuses HW2 templates/static and stores data in Cloud Datastore.
+- Reuses HW2 templates and static files for the UI.
 """
 
 import os
@@ -22,6 +17,7 @@ from urllib.parse import urlparse
 
 from flask import Flask, render_template, request, redirect, url_for, flash, g
 
+# Make hw2 templates available without copying them
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HW2_PATH = REPO_ROOT / "hw2"
 if HW2_PATH.exists():
@@ -107,9 +103,7 @@ def create_app() -> Flask:
                 return None
             # collapse whitespace and trim to max length
             v = re.sub(r"\s+", " ", v)
-            if len(v) > max_len:
-                return v[:max_len]
-            return v
+            return v[:max_len]
 
         def ival(name: str) -> Optional[int]:
             v = (form.get(name) or "").strip()
@@ -176,7 +170,7 @@ def create_app() -> Flask:
             rating=rating,
             url=url_val,
         )
-
+        
         model.insert_song(song)
         flash("Song added.", "success")
         return redirect(url_for("songs_list"))
