@@ -395,6 +395,9 @@ def run_multi_ticker_compare(tickers: List[str], lookback_days: int = 30) -> Non
 def run_single_ticker_composite(ticker: str, lookback_days: int = 90, with_llm: bool = True) -> None:
     """
     Fetch and display a richer composite snapshot, including risk score.
+
+    This uses the analyze_single_ticker MCP tool on the server, which already
+    bundles fundamentals, technicals, sentiment, and a coarse risk score.
     """
     ticker = ticker.upper().strip()
     if not ticker:
@@ -406,8 +409,9 @@ def run_single_ticker_composite(ticker: str, lookback_days: int = 90, with_llm: 
     print(f"Lookback window: {lookback_days} days")
     print()
 
+    # NOTE: call the existing composite tool implemented on the server.
     result = _call_mcp_tool(
-        "get_composite_snapshot",
+        "analyze_single_ticker",
         {
             "ticker": ticker,
             "lookback_days": lookback_days,
