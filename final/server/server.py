@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -9,9 +10,8 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from bigquery_adapter import get_fundamentals_for_ticker
-from alpha_vantage_adapter import (
-    get_price_series_for_ticker as get_price_series_for_ticker_alpha_vantage,
-)
+from alpha_vantage_adapter import get_price_series_for_ticker
+from newsdata_adapter import get_news_and_sentiment_for_ticker
 
 # Basic logging configuration. In Cloud Run, logs will be captured by
 # Cloud Logging and can be filtered by severity, trace, etc.
@@ -20,11 +20,11 @@ logger = logging.getLogger("final-mcp-server")
 
 app = FastAPI(
     title="CS530 Final - Agentic Quant MCP Server",
-    version="0.5.1",
+    version="0.3.0",
     description=(
         "MCP server that exposes tools over HTTP for an LLM agent client. "
-        "Current focus: BigQuery-based fundamentals and external finance "
-        "and sentiment APIs."
+        "Current focus: BigQuery-based fundamentals, Alpha Vantage price "
+        "series, and news-driven sentiment signals."
     ),
 )
 
@@ -114,17 +114,32 @@ def list_tools() -> List[MCPTool]:
         MCPTool(
             name="alpha_vantage_get_price_series",
             description=(
-                "Get historical daily OHLCV price time series for a ticker "
-                "using Alpha Vantage TIME_SERIES_DAILY (free-tier endpoint)."
+                "Get historical daily price time series for a ticker from "
+                "Alpha Vantage (TIME_SERIES_DAILY). Intended for technical "
+                "signals, back-of-the-envelope indicators, and charting."
             ),
             implemented=True,
         ),
         MCPTool(
             name="news_sentiment_for_ticker",
-            description="Fetch recent news for a ticker and attach sentiment scores.",
-            implemented=False,
+            description=(
+                "Fetch recent news for a ticker using NewsData.io and attach "
+                "a simple lexical sentiment score per article plus an "
+                "aggregate sentiment summary."
+            ),
+            implemented=True,
         ),
     ]
+
+
+def _parse_iso_date(value: str, field_name: str) -> datetime.date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Field "{field_name}" must be in YYYY-MM-DD format.',
+        ) from exc
 
 
 def _handle_bq_get_fundamentals(args: Dict[str, Any] | None) -> MCPCallResponse:
@@ -180,16 +195,17 @@ def _handle_bq_get_fundamentals(args: Dict[str, Any] | None) -> MCPCallResponse:
     )
 
 
-def _handle_alpha_vantage_get_price_series(
-    args: Dict[str, Any] | None,
-) -> MCPCallResponse:
+def _handle_alpha_vantage_get_price_series(args: Dict[str, Any] | None) -> MCPCallResponse:
     """
     Internal handler for the alpha_vantage_get_price_series tool.
 
     Expected arguments:
     - ticker (str; required): stock ticker symbol.
-    - start_date (str; required): ISO date string YYYY-MM-DD.
-    - end_date (str; required): ISO date string YYYY-MM-DD.
+    - start_date (str; required): ISO date YYYY-MM-DD.
+    - end_date (str; required): ISO date YYYY-MM-DD.
+    - resolution (str; optional): granularity, currently ignored by the
+      Alpha Vantage adapter which always uses daily bars, but accepted
+      for future extensibility.
     """
     if args is None:
         raise HTTPException(
@@ -201,42 +217,43 @@ def _handle_alpha_vantage_get_price_series(
     if not ticker or not isinstance(ticker, str):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "alpha_vantage_get_price_series requires a string "
-                '"ticker" argument.'
-            ),
+            detail='alpha_vantage_get_price_series requires a string "ticker" argument.',
         )
 
-    start_date = args.get("start_date")
-    end_date = args.get("end_date")
-    if not isinstance(start_date, str) or not isinstance(end_date, str):
+    start_raw = args.get("start_date")
+    end_raw = args.get("end_date")
+    if not isinstance(start_raw, str) or not isinstance(end_raw, str):
         raise HTTPException(
             status_code=400,
-            detail=(
-                'alpha_vantage_get_price_series requires "start_date" and '
-                '"end_date" arguments as YYYY-MM-DD strings.'
-            ),
+            detail='Both "start_date" and "end_date" must be ISO date strings.',
         )
 
+    start_date = _parse_iso_date(start_raw, "start_date")
+    end_date = _parse_iso_date(end_raw, "end_date")
+
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail='"start_date" must be on or before "end_date".',
+        )
+
+    resolution = args.get("resolution", "D")
+
     logger.info(
-        "alpha_vantage_get_price_series called for ticker=%s start=%s end=%s",
+        "alpha_vantage_get_price_series called for ticker=%s start=%s end=%s res=%s",
         ticker,
         start_date,
         end_date,
+        resolution,
     )
 
     try:
-        points = get_price_series_for_ticker_alpha_vantage(
+        points = get_price_series_for_ticker(
             ticker=ticker,
             start_date=start_date,
             end_date=end_date,
+            resolution=resolution,
         )
-    except ValueError as exc:
-        logger.exception("Invalid arguments for alpha_vantage_get_price_series")
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
     except RuntimeError as exc:
         logger.exception("Error while fetching price series from Alpha Vantage")
         raise HTTPException(
@@ -249,10 +266,87 @@ def _handle_alpha_vantage_get_price_series(
         ok=True,
         data={
             "ticker": ticker.upper(),
-            "resolution": "D",
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "resolution": resolution,
             "point_count": len(points),
             "points": points,
         },
+    )
+
+
+def _handle_news_sentiment_for_ticker(args: Dict[str, Any] | None) -> MCPCallResponse:
+    """
+    Internal handler for the news_sentiment_for_ticker tool.
+
+    Expected arguments:
+    - ticker (str; required): stock ticker symbol or company keyword.
+    - max_articles (int; optional): maximum number of articles to score.
+    - language (str; optional): ISO language code (default "en").
+    - country (str; optional): ISO country code hint for sources.
+    """
+    if args is None:
+        raise HTTPException(
+            status_code=400,
+            detail="news_sentiment_for_ticker requires arguments.",
+        )
+
+    ticker = args.get("ticker")
+    if not ticker or not isinstance(ticker, str):
+        raise HTTPException(
+            status_code=400,
+            detail='news_sentiment_for_ticker requires a string "ticker" argument.',
+        )
+
+    max_articles_raw = args.get("max_articles", 10)
+    try:
+        max_articles = int(max_articles_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail='Optional "max_articles" must be an integer if provided.',
+        )
+
+    language = args.get("language")
+    if language is not None and not isinstance(language, str):
+        raise HTTPException(
+            status_code=400,
+            detail='If provided, "language" must be a string.',
+        )
+
+    country = args.get("country")
+    if country is not None and not isinstance(country, str):
+        raise HTTPException(
+            status_code=400,
+            detail='If provided, "country" must be a string.',
+        )
+
+    logger.info(
+        "news_sentiment_for_ticker called for ticker=%s max_articles=%s lang=%s country=%s",
+        ticker,
+        max_articles,
+        language,
+        country,
+    )
+
+    try:
+        result = get_news_and_sentiment_for_ticker(
+            ticker=ticker,
+            max_articles=max_articles,
+            language=language,
+            country=country,
+        )
+    except RuntimeError as exc:
+        logger.exception("Error while fetching news or computing sentiment")
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        ) from exc
+
+    return MCPCallResponse(
+        tool="news_sentiment_for_ticker",
+        ok=True,
+        data=result,
     )
 
 
@@ -261,7 +355,7 @@ def call_tool(req: MCPCallRequest) -> MCPCallResponse:
     """
     Generic MCP tool dispatcher.
 
-    Example payloads:
+    The LLM agent client posts a JSON body like:
 
         {
           "tool": "bq_get_fundamentals",
@@ -271,14 +365,7 @@ def call_tool(req: MCPCallRequest) -> MCPCallResponse:
           }
         }
 
-        {
-          "tool": "alpha_vantage_get_price_series",
-          "arguments": {
-            "ticker": "AAPL",
-            "start_date": "2023-01-01",
-            "end_date": "2023-03-31"
-          }
-        }
+    and receives a structured MCPCallResponse with either data or error.
     """
     tool_name = req.tool
 
@@ -288,12 +375,8 @@ def call_tool(req: MCPCallRequest) -> MCPCallResponse:
     if tool_name == "alpha_vantage_get_price_series":
         return _handle_alpha_vantage_get_price_series(req.arguments or {})
 
-    # Placeholder for future tools
-    if tool_name in {"news_sentiment_for_ticker"}:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Tool {tool_name} is declared but not implemented yet.",
-        )
+    if tool_name == "news_sentiment_for_ticker":
+        return _handle_news_sentiment_for_ticker(req.arguments or {})
 
     raise HTTPException(
         status_code=404,
