@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -32,11 +32,7 @@ def _call_mcp_tool(tool: str, arguments: Dict[str, Any]) -> MCPResult:
     url = f"{MCP_SERVER_URL}/mcp/call"
 
     try:
-        resp = httpx.post(
-            url,
-            json={"tool": tool, "arguments": arguments},
-            timeout=20.0,
-        )
+        resp = httpx.post(url, json={"tool": tool, "arguments": arguments}, timeout=20.0)
         resp.raise_for_status()
     except httpx.HTTPError as exc:
         return MCPResult(
@@ -75,7 +71,7 @@ def _today_utc() -> date:
     just need a reasonable recent range; we do not need exact market close
     alignment here.
     """
-    return datetime.now(timezone.utc).date()
+    return datetime.utcnow().date()
 
 
 def _summarize_price_trend(price_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,10 +145,68 @@ def _summarize_news_sentiment(news_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def summarize_with_llm(snapshot: Dict[str, Any], *, ticker: str, mode: str) -> Optional[str]:
+    """
+    Optional helper that asks an LLM to summarize a single-ticker snapshot.
+
+    The call is gated on the OPENAI_API_KEY env var so that the project
+    still runs fine without any LLM credentials configured.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("[client] OPENAI_API_KEY not set; skipping LLM summary.", file=sys.stderr)
+        return None
+
+    try:
+        from openai import OpenAI  # type: ignore[import]
+    except ImportError:
+        print(
+            "[client] openai package not installed; run 'pip install openai' to enable LLM summaries.",
+            file=sys.stderr,
+        )
+        return None
+
+    client = OpenAI()
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    system_msg = (
+        "You are an educational quantitative research assistant. "
+        "Given JSON data about one stock's fundamentals, price action, "
+        "technical summary, news sentiment, and a coarse risk score, "
+        "write a concise, cautious, plain-English summary for a student. "
+        "Always include a clear disclaimer that this is not financial advice."
+    )
+
+    user_msg = (
+        f"Mode: {mode}\n"
+        f"Ticker: {ticker}\n"
+        "Here is the JSON snapshot to summarize:\n"
+        f"{json.dumps(snapshot, indent=2)}"
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.35,
+            max_tokens=500,
+        )
+    except Exception as exc:
+        print(f"[client] LLM summary call failed: {exc}", file=sys.stderr)
+        return None
+
+    content = resp.choices[0].message.content
+    return content if isinstance(content, str) else str(content)
+
+
 def run_quant_research_session(
     ticker: str,
     lookback_days: int = 30,
     max_news: int = 10,
+    with_llm: bool = True,
 ) -> None:
     """
     Agent-like orchestration for a single ticker.
@@ -181,9 +235,7 @@ def run_quant_research_session(
     )
     if not fundamentals_result.ok:
         print(f"  - Error: {fundamentals_result.error}", file=sys.stderr)
-        basics: Dict[str, Any] = {
-            "fundamentals": {"error": fundamentals_result.error}
-        }
+        basics: Dict[str, Any] = {"fundamentals": {"error": fundamentals_result.error}}
     else:
         fundamental_summary = _summarize_fundamentals(
             fundamentals_result.data or {}
@@ -261,13 +313,14 @@ def run_quant_research_session(
 
     print()
     print("=== Combined Research Snapshot (JSON) ===")
+    snapshot_payload = {
+        "ticker": ticker,
+        "lookback_days": lookback_days,
+        "snapshot": basics,
+    }
     print(
         json.dumps(
-            {
-                "ticker": ticker,
-                "lookback_days": lookback_days,
-                "snapshot": basics,
-            },
+            snapshot_payload,
             indent=2,
             sort_keys=True,
             default=str,
@@ -277,25 +330,71 @@ def run_quant_research_session(
     # Optionally show a tiny peek at the first news headlines so the
     # screencast demonstrates cross-tool context.
     news_block = basics.get("news_sentiment", {})
-    if "error" not in news_block and sentiment_summary:
+    if sentiment_summary and "error" not in news_block:
         print()
         print("Sample news headlines:")
-        articles = sentiment_summary["articles"]
+        articles = sentiment_summary.get("articles") or []
         for idx, art in enumerate(articles[:3], start=1):
             title = art.get("title") or "(no title)"
             lbl = art.get("sentiment_label", "neutral")
             print(f"  {idx}. [{lbl}] {title}")
 
+    if with_llm:
+        summary_text = summarize_with_llm(
+            snapshot=snapshot_payload,
+            ticker=ticker,
+            mode="single_ticker_snapshot",
+        )
+        if summary_text:
+            print()
+            print("=== LLM Commentary (educational only, not financial advice) ===")
+            print(summary_text)
 
-def run_analyze_single_ticker_session(
-    ticker: str,
-    lookback_days: int = 90,
-) -> None:
+
+def run_multi_ticker_compare(tickers: List[str], lookback_days: int = 30) -> None:
     """
-    Use the composite analyze_single_ticker MCP tool for one ticker.
+    Call the compare_tickers MCP tool and pretty-print the ranking.
+    """
+    symbols = [t.strip().upper() for t in tickers if t.strip()]
+    if not symbols:
+        print("[client] No tickers provided for comparison.", file=sys.stderr)
+        return
 
-    This hits the server-side orchestration that combines fundamentals,
-    prices, sentiment, and a simple risk score into one snapshot.
+    print("=== Multi-ticker risk comparison ===")
+    print(f"MCP server base URL: {MCP_SERVER_URL}")
+    print("Tickers: " + ", ".join(symbols))
+    print(f"Lookback window: {lookback_days} days")
+    print()
+
+    result = _call_mcp_tool(
+        "compare_tickers",
+        {
+            "tickers": symbols,
+            "lookback_days": lookback_days,
+        },
+    )
+    if not result.ok:
+        print(f"[client] Error from MCP tool compare_tickers: {result.error}", file=sys.stderr)
+        return
+
+    payload = result.data or {}
+    ranking = payload.get("ranking_by_risk") or []
+
+    print("Ranking from lowest to highest risk:")
+    for idx, entry in enumerate(ranking, start=1):
+        t = entry.get("ticker", "UNKNOWN")
+        score = float(entry.get("risk_score", 0.0))
+        label = entry.get("risk_label", "unknown")
+        print(f"  {idx}. {t}: {label} (score ~{score:.2f})")
+
+    print()
+    print("=== Raw compare_tickers result (JSON) ===")
+    print(json.dumps(payload, indent=2, sort_keys=False, default=str))
+
+
+def run_single_ticker_composite(ticker: str, lookback_days: int = 90, with_llm: bool = True) -> None:
+    """
+    Fetch and display a richer composite snapshot, including risk score.
     """
     ticker = ticker.upper().strip()
     if not ticker:
@@ -308,121 +407,64 @@ def run_analyze_single_ticker_session(
     print()
 
     result = _call_mcp_tool(
-        "analyze_single_ticker",
+        "get_composite_snapshot",
         {
             "ticker": ticker,
             "lookback_days": lookback_days,
         },
     )
     if not result.ok:
-        print(f"[client] Error from analyze_single_ticker: {result.error}", file=sys.stderr)
+        print(f"[client] Error from MCP tool get_composite_snapshot: {result.error}", file=sys.stderr)
         return
 
-    payload = result.data or {}
-    # Server response shape:
-    # {
-    #   "ticker": "...",
-    #   "lookback_days": ...,
-    #   "snapshot": { ... }
-    # }
-    snapshot = payload.get("snapshot") or payload
+    snapshot = result.data or {}
+    inner = snapshot.get("snapshot") or {}
 
-    risk_block = snapshot.get("risk") or {}
-    fundamentals_block = snapshot.get("fundamentals") or {}
-    technical_block = snapshot.get("technical") or {}
-    sentiment_block = snapshot.get("sentiment") or {}
-
-    score = risk_block.get("score")
-    label = risk_block.get("label", "unknown")
+    risk = inner.get("risk") or {}
+    fundamentals = inner.get("fundamentals") or {}
+    technical = inner.get("technical") or {}
+    sentiment = inner.get("sentiment") or {}
 
     print("Risk summary:")
-    if score is not None:
-        try:
-            score_float = float(score)
-        except (TypeError, ValueError):
-            score_float = None
-        if score_float is not None:
-            print(f"  - Risk label: {label} (score ~{score_float:.2f} on [0,1])")
-        else:
-            print(f"  - Risk label: {label} (score unavailable)")
-    else:
-        print(f"  - Risk label: {label} (score unavailable)")
-
-    print()
-    print("Fundamentals summary:")
-    print(f"  - Has data: {fundamentals_block.get('has_data', False)}")
-    print(f"  - Row count: {fundamentals_block.get('row_count')}")
-
-    print()
-    print("Technical summary:")
-    print(f"  - Has data: {technical_block.get('has_data', False)}")
-    print(f"  - Latest date: {technical_block.get('latest_date')}")
-    print(f"  - Latest close: {technical_block.get('latest_close')}")
-    print(f"  - Total change %: {technical_block.get('change_pct_total')}")
-    print(f"  - Trend label: {technical_block.get('trend_label')}")
-
-    print()
-    print("Sentiment summary:")
-    print(f"  - Aggregate label: {sentiment_block.get('aggregate_label')}")
-    print(f"  - Article count: {sentiment_block.get('article_count')}")
-
-    print()
-    print("=== Raw composite snapshot (JSON) ===")
-    print(json.dumps(payload, indent=2, default=str))
-
-
-def run_compare_tickers_session(
-    tickers: List[str],
-    lookback_days: int = 30,
-) -> None:
-    """
-    Compare multiple tickers using the compare_tickers MCP tool.
-
-    The server returns a ranking by risk score along with full snapshots
-    for each ticker. We print a compact ranking for the screencast and
-    then dump the JSON so you can scroll through it.
-    """
-    cleaned = [t.upper().strip() for t in tickers if t.strip()]
-    if len(cleaned) < 2:
-        print("[client] Need at least two tickers to compare.", file=sys.stderr)
-        return
-
-    print("=== Multi-ticker risk comparison ===")
-    print(f"MCP server base URL: {MCP_SERVER_URL}")
-    print(f"Tickers: {', '.join(cleaned)}")
-    print(f"Lookback window: {lookback_days} days")
-    print()
-
-    result = _call_mcp_tool(
-        "compare_tickers",
-        {
-            "tickers": cleaned,
-            "lookback_days": lookback_days,
-        },
+    print(
+        "  - Risk label: {label} (score ~{score:.2f} on [0,1])".format(
+            label=risk.get("label", "unknown"),
+            score=float(risk.get("score", 0.0)),
+        )
     )
-    if not result.ok:
-        print(f"[client] Error from compare_tickers: {result.error}", file=sys.stderr)
-        return
-
-    data = result.data or {}
-    ranking = data.get("ranking_by_risk") or []
-
-    if not ranking:
-        print("[client] No ranking returned from compare_tickers.")
-    else:
-        print("Ranking from lowest to highest risk:")
-        for idx, entry in enumerate(ranking, start=1):
-            t = entry.get("ticker") or "?"
-            score = entry.get("risk_score")
-            label = entry.get("risk_label", "unknown")
-            if isinstance(score, (int, float)):
-                print(f"  {idx}. {t}: {label} (score ~{score:.2f})")
-            else:
-                print(f"  {idx}. {t}: {label} (score unavailable)")
-
     print()
-    print("=== Raw compare_tickers result (JSON) ===")
-    print(json.dumps(data, indent=2, default=str))
+
+    print("Fundamentals summary:")
+    print(f"  - Has data: {fundamentals.get('has_data', False)}")
+    print(f"  - Row count: {fundamentals.get('row_count', 0)}")
+    print()
+
+    print("Technical summary:")
+    print(f"  - Has data: {technical.get('has_data', False)}")
+    print(f"  - Latest date: {technical.get('latest_date')}")
+    print(f"  - Latest close: {technical.get('latest_close')}")
+    print(f"  - Total change %: {technical.get('change_pct_total')}")
+    print(f"  - Trend label: {technical.get('trend_label')}")
+    print()
+
+    print("Sentiment summary:")
+    print(f"  - Aggregate label: {sentiment.get('aggregate_label', 'unknown')}")
+    print(f"  - Article count: {sentiment.get('article_count', 0)}")
+    print()
+
+    print("=== Raw composite snapshot (JSON) ===")
+    print(json.dumps(snapshot, indent=2, sort_keys=False, default=str))
+
+    if with_llm:
+        summary_text = summarize_with_llm(
+            snapshot=snapshot,
+            ticker=ticker,
+            mode="composite_snapshot",
+        )
+        if summary_text:
+            print()
+            print("=== LLM Commentary (educational only, not financial advice) ===")
+            print(summary_text)
 
 
 def main(argv: List[str]) -> None:
@@ -431,21 +473,19 @@ def main(argv: List[str]) -> None:
 
     Usage patterns:
       - python client.py
-            Prompts for an interactive mode and ticker(s).
-
+            Interactive menu.
       - python client.py ticker AAPL
-            Runs a single-ticker research session for AAPL.
-
+            Runs a research session for AAPL.
       - python client.py ticker AAPL 60
             Uses a 60 day lookback window instead of the default 30.
-
-      - python client.py analyze AAPL 90
-            Uses the composite analyze_single_ticker tool for AAPL.
-
-      - python client.py compare AAPL MSFT NVDA 45
-            Compares AAPL, MSFT, and NVDA over a 45 day lookback window.
+      - python client.py compare AAPL MSFT NVDA
+            Compares tickers by risk score over the default 30 day window.
     """
-    # CLI subcommand: single-ticker 3-tool flow (original behavior)
+    # CLI shortcuts first.
+    if len(argv) >= 3 and argv[1] == "compare":
+        run_multi_ticker_compare(argv[2:])
+        return
+
     if len(argv) >= 3 and argv[1] == "ticker":
         ticker = argv[2]
         if len(argv) >= 4:
@@ -463,83 +503,37 @@ def main(argv: List[str]) -> None:
         run_quant_research_session(ticker=ticker, lookback_days=lookback)
         return
 
-    # CLI subcommand: composite analysis
-    if len(argv) >= 3 and argv[1] == "analyze":
-        ticker = argv[2]
-        if len(argv) >= 4:
-            try:
-                lookback = int(argv[3])
-            except ValueError:
-                print(
-                    "[client] Invalid lookback_days argument; using default 90.",
-                    file=sys.stderr,
-                )
-                lookback = 90
-        else:
-            lookback = 90
-
-        run_analyze_single_ticker_session(ticker=ticker, lookback_days=lookback)
-        return
-
-    # CLI subcommand: multi-ticker comparison
-    if len(argv) >= 4 and argv[1] == "compare":
-        raw_args = argv[2:]
-        lookback = 30
-
-        # Allow optional trailing integer for lookback_days
-        if raw_args:
-            try:
-                maybe_lookback = int(raw_args[-1])
-                lookback = maybe_lookback
-                ticker_args = raw_args[:-1]
-            except ValueError:
-                ticker_args = raw_args
-        else:
-            ticker_args = []
-
-        run_compare_tickers_session(
-            tickers=ticker_args,
-            lookback_days=lookback,
-        )
-        return
-
-    # Interactive mode if no subcommand is provided
+    # Interactive menu.
     print("Agentic Quant Research Client")
     print("------------------------------")
     print("Choose an option:")
     print("  1) Single ticker snapshot (fundamentals + prices + news)")
     print("  2) Compare multiple tickers by risk score")
     print("  3) Single ticker composite analysis with risk score")
-    choice = input("Enter choice [1-3] (default 1): ").strip() or "1"
+    choice = input("Enter choice [1-3] (default 1): ").strip()
 
     if choice == "2":
-        tickers_str = input(
-            "Enter ticker symbols separated by commas (e.g., AAPL, MSFT, GOOG): "
-        ).strip()
-        if not tickers_str:
+        raw = input("Enter comma-separated tickers (e.g., AAPL,MSFT,NVDA): ").strip()
+        if not raw:
             print("[client] No tickers entered; aborting.", file=sys.stderr)
             return
-        tickers = [t.strip() for t in tickers_str.split(",") if t.strip()]
-        if len(tickers) < 2:
-            print("[client] Need at least two tickers for comparison.", file=sys.stderr)
+        tickers = [part.strip().upper() for part in raw.split(",") if part.strip()]
+        if not tickers:
+            print("[client] No valid tickers parsed; aborting.", file=sys.stderr)
             return
-        run_compare_tickers_session(tickers=tickers, lookback_days=30)
-        return
-
-    if choice == "3":
+        run_multi_ticker_compare(tickers)
+    elif choice == "3":
         ticker = input("Enter ticker symbol (e.g., AAPL): ").strip()
         if not ticker:
             print("[client] No ticker entered; aborting.", file=sys.stderr)
             return
-        run_analyze_single_ticker_session(ticker=ticker, lookback_days=90)
-        return
-
-    # Default: single-ticker 3-tool flow
-    ticker = input("Enter ticker symbol (e.g., AAPL): ").strip()
-    if not ticker:
-        print("[client] No ticker entered; aborting.", file=sys.stderr)
-        return
-    run_quant_research_session(ticker=ticker, lookback_days=30)
+        run_single_ticker_composite(ticker=ticker)
+    else:
+        ticker = input("Enter ticker symbol (e.g., AAPL): ").strip()
+        if not ticker:
+            print("[client] No ticker entered; aborting.", file=sys.stderr)
+            return
+        run_quant_research_session(ticker=ticker)
 
 
 if __name__ == "__main__":
