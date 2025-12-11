@@ -23,62 +23,79 @@ def _get_client() -> bigquery.Client:
     return _bq_client
 
 
+# Minimal mapping from ticker -> integer CIK (no leading zeros).
+# You can extend this list if you want to support more tickers.
+_TICKER_TO_CIK: Dict[str, int] = {
+    "AAPL": 320193,    # Apple Inc. (CIK 0000320193 -> 320193)
+    "MSFT": 789019,    # Microsoft Corp. (0000789019 -> 789019)
+    "GOOGL": 1652044,  # Alphabet Inc. (0001652044 -> 1652044)
+    "GOOG": 1652044,
+    "AMZN": 1018724,   # Amazon.com Inc. (0001018724 -> 1018724)
+    "META": 1326801,   # Meta Platforms Inc.
+    "TSLA": 1318605,   # Tesla Inc.
+    "NFLX": 1065280,   # Netflix Inc.
+}
+
+
+def _lookup_cik_for_ticker(ticker: str) -> int:
+    """
+    Translate a stock ticker symbol into an integer CIK used in the
+    sec_quarterly_financials tables.
+
+    The public SEC dataset stores central_index_key as an INT64 with
+    leading zeros removed (e.g., 320193 instead of 0000320193).
+    """
+    key = ticker.strip().upper()
+    cik = _TICKER_TO_CIK.get(key)
+    if cik is None:
+        raise RuntimeError(
+            f"No CIK mapping configured for ticker '{ticker}'. "
+            "Update _TICKER_TO_CIK in bigquery_adapter.py to support this symbol."
+        )
+    return cik
+
+
 def get_fundamentals_for_ticker(
     ticker: str,
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch fundamentals records for a given ticker from BigQuery.
+    Fetch fundamentals-style records for a given ticker from BigQuery.
 
-    Parameters
-    ----------
-    ticker : str
-        Stock ticker (e.g., "AAPL", "NVDA"). Case-insensitive.
-    limit : int
-        Maximum number of rows to return (to protect from huge scans).
+    Currently this is wired against the public SEC quarterly dataset
+    via BQ_SEC_TABLE_FQN. For example:
 
-    Returns
-    -------
-    List[Dict[str, Any]]
-        A list of rows (each row is a dict mapping column name to value).
+        BQ_SEC_TABLE_FQN=bigquery-public-data.sec_quarterly_financials.quick_summary
 
-    Configuration requirements
-    --------------------------
-    - settings.bq_sec_table_fqn (env var BQ_SEC_TABLE_FQN) must be set
-      to a fully-qualified table or view, for example:
-
-          BQ_SEC_TABLE_FQN=cloud-calizo-calizo.quant.sec_fundamentals_view
-
-      The table/view should have at least a "ticker" column; additional
-      columns are free-form and will be returned as-is.
-
-    Notes
-    -----
-    - This function is intentionally generic about schema so that you can
-      adapt it by creating a view in BigQuery that presents whatever shape
-      you find most useful for quant research.
+    We filter by central_index_key (CIK) using a simple ticker -> CIK
+    mapping and return up to `limit` rows as a list of dicts.
     """
     if not settings.bq_sec_table_fqn:
         raise RuntimeError(
             "BigQuery SEC fundamentals table not configured. "
             "Set BQ_SEC_TABLE_FQN in the environment to a fully-qualified "
             "table or view name, for example:\n"
-            "  BQ_SEC_TABLE_FQN=cloud-calizo-calizo.quant.sec_fundamentals_view"
+            "  BQ_SEC_TABLE_FQN=bigquery-public-data.sec_quarterly_financials.quick_summary"
         )
+
+    # Resolve ticker -> integer CIK used by the SEC dataset.
+    cik_int = _lookup_cik_for_ticker(ticker)
 
     client = _get_client()
 
-    # Parameterized query to avoid SQL injection and allow query cache.
+    # For the quick_summary table this will give you rows like:
+    # central_index_key, company_name, submission_number, fiscal_year,
+    # fiscal_period_focus, measure_tag, value, etc.
     query = f"""
     SELECT *
     FROM `{settings.bq_sec_table_fqn}`
-    WHERE UPPER(ticker) = @ticker
+    WHERE central_index_key = @cik
     LIMIT @limit_rows
     """
 
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("ticker", "STRING", ticker.upper()),
+            bigquery.ScalarQueryParameter("cik", "INT64", cik_int),
             bigquery.ScalarQueryParameter("limit_rows", "INT64", int(limit)),
         ]
     )
@@ -94,7 +111,6 @@ def get_fundamentals_for_ticker(
 
     rows: List[Dict[str, Any]] = []
     for row in result_iter:
-        # row is a google.cloud.bigquery.table.Row; .items() gives (key, value)
         rows.append(dict(row.items()))
 
     return rows

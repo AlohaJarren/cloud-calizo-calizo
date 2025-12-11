@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, List
 
@@ -7,117 +8,125 @@ import httpx
 
 from config import settings
 
-ALPHAVANTAGE_BASE_URL = "https://www.alphavantage.co/query"
+ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+
+
+@dataclass
+class PricePoint:
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+def _ensure_api_key() -> str:
+    """
+    Return the Alpha Vantage API key from settings or raise a clear error.
+    """
+    api_key = (
+        getattr(settings, "alpha_vantage_api_key", None)
+        or getattr(settings, "alphavantage_api_key", None)
+    )
+    if not api_key:
+        raise RuntimeError(
+            "Alpha Vantage API key not configured. "
+            "Set ALPHA_VANTAGE_API_KEY in the environment."
+        )
+    return api_key
+
+
+def _parse_date(s: str) -> date:
+    return datetime.strptime(s, "%Y-%m-%d").date()
 
 
 def get_price_series_for_ticker(
     ticker: str,
     start_date: date,
     end_date: date,
-    resolution: str = "D",
+    max_points: int = 60,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch daily price series for a ticker from Alpha Vantage.
+    Fetch daily price series for ticker from Alpha Vantage TIME_SERIES_DAILY
+    and return a list of dicts sorted by date.
 
-    Parameters
-    ----------
-    ticker : str
-        Stock ticker symbol (e.g., "AAPL").
-    start_date : date
-        Inclusive start of the date range filter.
-    end_date : date
-        Inclusive end of the date range filter.
-    resolution : str
-        Granularity hint, currently ignored because we always use
-        TIME_SERIES_DAILY for the free tier. Kept for future extension.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        A list of daily OHLCV bars, sorted by date ascending. Each element
-        is a JSON-serializable dict.
+    The list is filtered to [start_date, end_date] inclusive and truncated to
+    at most max_points most recent entries.
     """
-    api_key = settings.alphavantage_api_key
-    if not api_key:
-        raise RuntimeError(
-            "Alpha Vantage API key not configured. "
-            "Set ALPHAVANTAGE_API_KEY in the environment."
-        )
-
     if start_date > end_date:
-        raise RuntimeError("start_date must be on or before end_date.")
+        raise RuntimeError(f"start_date {start_date} is after end_date {end_date}.")
+
+    api_key = _ensure_api_key()
 
     params = {
         "function": "TIME_SERIES_DAILY",
         "symbol": ticker.upper(),
-        "outputsize": "compact",
+        "outputsize": "compact",  # last ~100 days
         "apikey": api_key,
     }
 
     try:
         with httpx.Client(timeout=10.0) as client:
-            resp = client.get(ALPHAVANTAGE_BASE_URL, params=params)
+            resp = client.get(ALPHA_VANTAGE_URL, params=params)
             resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise RuntimeError(f"Alpha Vantage HTTP request failed: {exc}") from exc
 
     data = resp.json()
+    ts = data.get("Time Series (Daily)")
 
-    # Alpha Vantage uses "Error Message" and "Note" to signal problems,
-    # but still returns HTTP 200 in many of these cases.
-    if "Error Message" in data:
-        raise RuntimeError(f"Alpha Vantage error: {data['Error Message']}")
-    if "Note" in data:
-        raise RuntimeError(f"Alpha Vantage note: {data['Note']}")
-
-    ts_key = "Time Series (Daily)"
-    if ts_key not in data:
+    if not isinstance(ts, dict):
+        note = data.get("Note") or data.get("Information") or data.get("Error Message")
         raise RuntimeError(
             "Alpha Vantage response missing 'Time Series (Daily)'. "
-            "Check the API key and parameters or call frequency limits."
+            f"Check API key, rate limits, and parameters. Extra info: {note!r}"
         )
 
-    ts = data[ts_key]
-    if not isinstance(ts, dict):
-        raise RuntimeError(
-            "Alpha Vantage time series data is not a dictionary as expected."
-        )
+    points: List[PricePoint] = []
 
-    points: List[Dict[str, Any]] = []
-
-    for date_str, bar in ts.items():
+    for date_str, fields in ts.items():
         try:
-            bar_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            d = _parse_date(date_str)
         except ValueError:
-            # Skip unexpected keys that are not ISO dates
             continue
 
-        if bar_date < start_date or bar_date > end_date:
+        if d < start_date or d > end_date:
             continue
 
-        # Alpha Vantage daily bars use these keys
         try:
-            open_val = float(bar.get("1. open"))
-            high_val = float(bar.get("2. high"))
-            low_val = float(bar.get("3. low"))
-            close_val = float(bar.get("4. close"))
-            volume_val = int(bar.get("5. volume"))
-        except (TypeError, ValueError) as exc:
-            # If any conversion fails, skip this bar rather than failing the whole call
+            open_ = float(fields["1. open"])
+            high = float(fields["2. high"])
+            low = float(fields["3. low"])
+            close = float(fields["4. close"])
+            volume = int(float(fields["5. volume"]))
+        except (KeyError, ValueError, TypeError):
             continue
 
         points.append(
-            {
-                "date": bar_date.isoformat(),
-                "open": open_val,
-                "high": high_val,
-                "low": low_val,
-                "close": close_val,
-                "volume": volume_val,
-            }
+            PricePoint(
+                date=d.isoformat(),
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+            )
         )
 
-    # Sort by date ascending to make it nicer for the client/agent
-    points.sort(key=lambda p: p["date"])
+    # Sort ascending by date and keep only the most recent max_points entries
+    points.sort(key=lambda p: p.date)
+    if max_points and len(points) > max_points:
+        points = points[-max_points:]
 
-    return points
+    return [
+        {
+            "date": p.date,
+            "open": p.open,
+            "high": p.high,
+            "low": p.low,
+            "close": p.close,
+            "volume": p.volume,
+        }
+        for p in points
+    ]

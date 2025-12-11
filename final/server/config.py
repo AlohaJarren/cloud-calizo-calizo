@@ -35,7 +35,7 @@ class Settings:
     # External APIs
     finnhub_api_key: str | None = os.getenv("FINNHUB_API_KEY")
     newsdata_api_key: str | None = os.getenv("NEWSDATA_API_KEY")
-    alphavantage_api_key: str | None = os.getenv("ALPHAVANTAGE_API_KEY")
+    alpha_vantage_api_key: str | None = os.getenv("ALPHA_VANTAGE_API_KEY")
 
     # Misc environment flag (dev, prod, test, etc.)
     environment: str = os.getenv("ENVIRONMENT", "dev")

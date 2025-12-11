@@ -213,3 +213,23 @@ def get_news_and_sentiment_for_ticker(
             for a in articles
         ],
     }
+
+
+def get_news_with_sentiment_for_ticker(
+    ticker: str,
+    max_articles: int = 10,
+    language: Optional[str] = None,
+    country: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Backwards compatible alias for get_news_and_sentiment_for_ticker.
+
+    The server expects get_news_with_sentiment_for_ticker, so we keep this
+    thin wrapper that forwards arguments unchanged.
+    """
+    return get_news_and_sentiment_for_ticker(
+        ticker=ticker,
+        max_articles=max_articles,
+        language=language,
+        country=country,
+    )
