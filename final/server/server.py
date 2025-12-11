@@ -1,281 +1,62 @@
-from typing import Any, Dict, List
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from config import settings
+from bigquery_adapter import get_fundamentals_for_ticker
 
+# Basic logging configuration. In Cloud Run, logs will be captured by
+# Cloud Logging and can be filtered by severity, trace, etc.
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("final-mcp-server")
 
 app = FastAPI(
-    title="CS 530 Final MCP Server: Stock Research Assistant",
+    title="CS530 Final - Agentic Quant MCP Server",
+    version="0.2.0",
     description=(
-        "MCP server exposing tools for quant research using "
-        "BigQuery public data, Finnhub, and NewsData.io."
+        "MCP server that exposes tools over HTTP for an LLM agent client. "
+        "Current focus: BigQuery-based fundamentals and (later) finance "
+        "and sentiment APIs."
     ),
-    version="0.1.0",
 )
 
 
-# Pydantic models for MCP-style tools
-
-class ToolDescription(BaseModel):
-    """
-    Describes a single MCP tool.
-
-    Note: input_schema and output_schema are lightweight JSON Schema-like
-    dictionaries so the client agent can reason about arguments and results.
-    """
-
+class MCPTool(BaseModel):
     name: str
     description: str
-    input_schema: Dict[str, Any]
-    output_schema: Dict[str, Any]
     implemented: bool = Field(
         default=False,
-        description="Whether this tool is fully implemented on the server.",
+        description="True if this tool is wired to a real backend.",
     )
 
 
-class ToolsListResponse(BaseModel):
-    tools: List[ToolDescription]
-
-
-class ToolCallRequest(BaseModel):
-    """
-    Generic request wrapper for calling an MCP tool.
-
-    Example:
-    {
-        "tool_name": "analyze_single_ticker",
-        "arguments": {
-            "ticker": "AAPL",
-            "horizon": "3y"
-        }
-    }
-    """
-
-    tool_name: str = Field(..., description="Name of the tool to call.")
-    arguments: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Tool-specific arguments as a JSON object.",
+class MCPCallRequest(BaseModel):
+    tool: str = Field(..., description="Name of the MCP tool to invoke.")
+    arguments: Dict[str, Any] | None = Field(
+        default=None,
+        description="JSON arguments for the tool call.",
     )
 
 
-class ToolCallResponse(BaseModel):
-    """
-    Generic response wrapper from an MCP tool call.
-    """
+class MCPCallResponse(BaseModel):
+    tool: str
+    ok: bool
+    data: Any | None = None
+    error: Optional[str] = None
 
-    tool_name: str
-    result: Any
-
-# Tool registry: placeholder definitions
-
-def _build_tool_registry() -> Dict[str, ToolDescription]:
-    """
-    Build the registry of available tools.
-    """
-
-    tools: Dict[str, ToolDescription] = {}
-
-    tools["bq_get_fundamentals"] = ToolDescription(
-        name="bq_get_fundamentals",
-        description=(
-            "Placeholder: will fetch fundamental financial data for a "
-            "given ticker from the BigQuery SEC public dataset."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string", "description": "Stock ticker symbol"},
-                "years": {
-                    "type": "integer",
-                    "description": "Number of years of history to retrieve",
-                },
-                "period": {
-                    "type": "string",
-                    "enum": ["annual", "quarterly"],
-                    "description": "Financial reporting period type",
-                },
-            },
-            "required": ["ticker"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "statements": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                },
-            },
-        },
-        implemented=False,
-    )
-
-    tools["get_price_history"] = ToolDescription(
-        name="get_price_history",
-        description=(
-            "Placeholder:  will fetch historical OHLCV price data "
-            "for a ticker using the Finnhub API."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "start_date": {"type": "string", "description": "ISO date, e.g. 2020-01-01"},
-                "end_date": {"type": "string", "description": "ISO date, e.g. 2024-12-31"},
-            },
-            "required": ["ticker"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "prices": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "date": {"type": "string"},
-                            "open": {"type": "number"},
-                            "high": {"type": "number"},
-                            "low": {"type": "number"},
-                            "close": {"type": "number"},
-                            "volume": {"type": "number"},
-                        },
-                    },
-                },
-            },
-        },
-        implemented=False,
-    )
-
-    tools["get_news_sentiment"] = ToolDescription(
-        name="get_news_sentiment",
-        description=(
-            "Placeholder:  will fetch recent news articles for a ticker "
-            "from NewsData.io and attach basic sentiment labels."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "days": {
-                    "type": "integer",
-                    "description": "How many days back to search for news",
-                },
-            },
-            "required": ["ticker"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "articles": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "headline": {"type": "string"},
-                            "source": {"type": "string"},
-                            "published_at": {"type": "string"},
-                            "sentiment": {"type": "string"},
-                        },
-                    },
-                },
-            },
-        },
-        implemented=False,
-    )
-
-    tools["analyze_single_ticker"] = ToolDescription(
-        name="analyze_single_ticker",
-        description=(
-            "Placeholder: high-level tool that will combine fundamentals, "
-            "price history, and news sentiment into a single analysis for "
-            "one ticker."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "horizon": {
-                    "type": "string",
-                    "description": "Time horizon string like '1y' or '3y'",
-                },
-            },
-            "required": ["ticker"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "ticker": {"type": "string"},
-                "summary": {"type": "string"},
-                "risk_band": {"type": "string"},
-                "fundamentals": {"type": "object"},
-                "technicals": {"type": "object"},
-                "sentiment": {"type": "object"},
-            },
-        },
-        implemented=False,
-    )
-
-    tools["compare_tickers"] = ToolDescription(
-        name="compare_tickers",
-        description=(
-            "Placeholder: high-level tool that will compare multiple "
-            "tickers on fundamentals, technicals, and sentiment."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "tickers": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 2,
-                    "description": "List of ticker symbols to compare",
-                },
-                "horizon": {
-                    "type": "string",
-                    "description": "Time horizon string like '1y' or '3y'",
-                },
-            },
-            "required": ["tickers"],
-        },
-        output_schema={
-            "type": "object",
-            "properties": {
-                "tickers": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-                "comparison_table": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                },
-                "ranking": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-            },
-        },
-        implemented=False,
-    )
-
-    return tools
-
-
-TOOL_REGISTRY: Dict[str, ToolDescription] = _build_tool_registry()
-
-# Health and readiness endpoints
 
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     """
-    Basic liveness endpoint.
+    Simple liveness probe.
 
-    Use this for simple container health checks (Cloud Run, docker).
+    Does not touch external services. Suitable for container orchestration
+    health checks.
     """
     return {"status": "ok"}
 
@@ -283,64 +64,159 @@ def healthz() -> Dict[str, str]:
 @app.get("/readyz")
 def readyz() -> Dict[str, Any]:
     """
-    Readiness endpoint.
+    Readiness probe.
 
-    For now this just returns some lightweight config info.
-    Later, you can extend this to check connectivity to
-    BigQuery and external APIs.
+    Performs lightweight checks on configuration. We do not ping BigQuery
+    on every call, but we can surface missing env vars here for easier
+    debugging in Cloud Run.
     """
+    missing: List[str] = []
+
+    if not settings.project_id:
+        missing.append("PROJECT_ID")
+
+    if not settings.bq_sec_table_fqn:
+        missing.append("BQ_SEC_TABLE_FQN")
+
+    status = "ready" if not missing else "degraded"
+
     return {
-        "status": "ready",
-        "project_id": settings.project_id or "(unset)",
+        "status": status,
+        "project_id": settings.project_id,
         "environment": settings.environment,
+        "missing_env": missing,
     }
 
 
-# MCP endpoints
-
-@app.post("/mcp/tools/list", response_model=ToolsListResponse)
-def list_tools() -> ToolsListResponse:
+@app.get("/mcp/tools", response_model=List[MCPTool])
+def list_tools() -> List[MCPTool]:
     """
-    Return the list of MCP tools exposed by this server.
+    Describe available tools to the MCP client.
 
-    In MCP terms, this is similar to the "tools/list" request.
+    The client (e.g., a LangChain or MCP-capable agent) can call this to
+    discover what tools exist and which ones are implemented in this
+    server version.
     """
-    return ToolsListResponse(tools=list(TOOL_REGISTRY.values()))
+    return [
+        MCPTool(
+            name="bq_get_fundamentals",
+            description=(
+                "Query BigQuery for fundamentals rows for a given ticker, "
+                "using a configurable SEC-derived table or view "
+                "(BQ_SEC_TABLE_FQN). Returns raw rows for the agent to "
+                "analyze and synthesize into buy/hold/sell narratives."
+            ),
+            implemented=True,
+        ),
+        MCPTool(
+            name="finnhub_get_price_series",
+            description="Get historical price time series for a ticker from Finnhub.",
+            implemented=False,
+        ),
+        MCPTool(
+            name="news_sentiment_for_ticker",
+            description="Fetch recent news for a ticker and attach sentiment scores.",
+            implemented=False,
+        ),
+    ]
 
 
-@app.post("/mcp/tools/call", response_model=ToolCallResponse)
-def call_tool(request: ToolCallRequest) -> ToolCallResponse:
+def _handle_bq_get_fundamentals(args: Dict[str, Any] | None) -> MCPCallResponse:
     """
-    Invoke a specific MCP tool by name.
+    Internal handler for the bq_get_fundamentals tool.
 
-    In this first commit, all tools are placeholders and will return
-    a 501 Not Implemented response so that the client agent can still
-    exercise the protocol and error handling.
+    Expected arguments:
+    - ticker (str; required): stock ticker symbol.
+    - limit (int; optional): max number of rows to return (default 100).
     """
-    tool_name = request.tool_name
-
-    if tool_name not in TOOL_REGISTRY:
+    if args is None:
         raise HTTPException(
-            status_code=404,
-            detail=f"Unknown tool '{tool_name}'. Known tools: {list(TOOL_REGISTRY.keys())}",
+            status_code=400,
+            detail="bq_get_fundamentals requires arguments.",
         )
 
-    # Placeholder behavior: tools are advertised but not implemented yet.
-    raise HTTPException(
-        status_code=501,
-        detail=f"Tool '{tool_name}' is not implemented yet on the server.",
+    ticker = args.get("ticker")
+    if not ticker or not isinstance(ticker, str):
+        raise HTTPException(
+            status_code=400,
+            detail='bq_get_fundamentals requires a string "ticker" argument.',
+        )
+
+    limit_raw = args.get("limit", 100)
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail='Optional "limit" must be an integer if provided.',
+        )
+
+    logger.info("bq_get_fundamentals called for ticker=%s limit=%s", ticker, limit)
+
+    try:
+        rows = get_fundamentals_for_ticker(ticker=ticker, limit=limit)
+    except RuntimeError as exc:
+        # Config or BigQuery runtime errors
+        logger.exception("Error while fetching fundamentals from BigQuery")
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        ) from exc
+
+    return MCPCallResponse(
+        tool="bq_get_fundamentals",
+        ok=True,
+        data={
+            "ticker": ticker.upper(),
+            "row_count": len(rows),
+            "rows": rows,
+        },
     )
 
 
-# Local development entrypoint
+@app.post("/mcp/call", response_model=MCPCallResponse)
+def call_tool(req: MCPCallRequest) -> MCPCallResponse:
+    """
+    Generic MCP tool dispatcher.
+
+    The LLM agent client posts a JSON body like:
+
+        {
+          "tool": "bq_get_fundamentals",
+          "arguments": {
+            "ticker": "AAPL",
+            "limit": 50
+          }
+        }
+
+    and receives a structured MCPCallResponse with either data or error.
+    """
+    tool_name = req.tool
+
+    if tool_name == "bq_get_fundamentals":
+        return _handle_bq_get_fundamentals(req.arguments or {})
+
+    # Placeholder for future tools
+    if tool_name in {"finnhub_get_price_series", "news_sentiment_for_ticker"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool {tool_name} is declared but not implemented yet.",
+        )
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Unknown tool: {tool_name}",
+    )
+
 
 if __name__ == "__main__":
-    # Allow running with: python server.py
+    # Allow local dev via: python server.py
     import uvicorn
 
-    uvicorn.run(
-        "server:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8080")),  # type: ignore[name-defined]
-        reload=True,
-    )
+    port_str = os.getenv("PORT", "8080")
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 8080
+
+    uvicorn.run(app, host="0.0.0.0", port=port)
