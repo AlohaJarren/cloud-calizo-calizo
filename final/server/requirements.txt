@@ -5,3 +5,4 @@ python-dotenv
 
 google-cloud-bigquery
 google-api-core
+httpx
