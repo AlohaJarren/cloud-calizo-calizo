@@ -2,6 +2,6 @@ https://media.pdx.edu/media/t/1_83v68kji
 # Main Video
 
 https://media.pdx.edu/media/t/1_raitc9qd
-# Add On (Couldn't edit in) for Git Commit Diffs
+# Add On (Couldn't edit into MediaSpace main video) for Git Commit Diffs
 
 # Total Time: 15:00
